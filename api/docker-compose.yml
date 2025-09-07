@@ -25,5 +25,12 @@ services:
       DB_PASSWORD: postgres
       DB_PORT: 5432
 
+      STORAGE_BACKEND: "local"  # "local" or "s3"
+      LOCAL_STORAGE_PATH: "/app/uploads"  # Default "/app/uploads"
+      # AWS_ACCESS_KEY_ID: "your-key"
+      # AWS_SECRET_ACCESS_KEY: "your-secret"
+      # AWS_REGION: "us-east-1"
+      # S3_BUCKET: "my-app-bucket"
+
 volumes:
   db_data:

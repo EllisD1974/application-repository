@@ -8,6 +8,7 @@ CREATE TABLE applications (
 CREATE TABLE versions (
     id SERIAL PRIMARY KEY,
     version TEXT NOT NULL,
+    is_testing BOOLEAN DEFAULT FALSE,
     application_id INTEGER REFERENCES applications(id) ON DELETE CASCADE
 );
 

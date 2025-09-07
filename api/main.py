@@ -1,10 +1,17 @@
 # main.py
+from email.mime import base
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List
-
+import boto3
 import os
+
+from storage import get_storage
+
+
+storage = get_storage()
 
 DB_CONFIG = {
     "dbname": os.environ.get("DB_NAME"),
@@ -13,6 +20,15 @@ DB_CONFIG = {
     "host": os.environ.get("DB_HOST"),  # name of your postgres container in Docker Compose
     "port": os.environ.get("DB_PORT")
 }
+
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION")
+)
+
+S3_BUCKET = os.getenv("S3_BUCKET") 
 
 app = FastAPI()
 
@@ -55,3 +71,129 @@ def get_applications():
     cur.close()
     conn.close()
     return result
+
+@app.post("/upload")
+async def upload_file(
+    application_name: str = Form(...),
+    version: str = Form(...),
+    file: UploadFile = File(...)
+):
+    file_bytes = await file.read()
+    saved_path = storage.save(file_bytes, file.filename, application_name, version)
+
+    # Save metadata in DB
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
+
+    # Insert app
+    cur.execute("INSERT INTO applications (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id;", (application_name,))
+    app_row = cur.fetchone()
+    if app_row:
+        app_id = app_row[0]
+    else:
+        cur.execute("SELECT id FROM applications WHERE name=%s", (application_name,))
+        app_id = cur.fetchone()[0]
+
+    # Insert version
+    cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
+    version_id = cur.fetchone()[0]
+
+    # Insert location
+    cur.execute("INSERT INTO locations (path, version_id) VALUES (%s, %s);", (saved_path, version_id))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"message": "File uploaded", "path": saved_path}
+
+@app.get("/download-version-dir/{application_name}/{version}")
+def download_version_dir(application_name: str, version: str, presign: bool = Query(True)):
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT l.path
+        FROM applications a
+        JOIN versions v ON a.id = v.application_id
+        JOIN locations l ON v.id = l.version_id
+        WHERE a.name = %s AND v.version = %s
+        ORDER BY l.id LIMIT 1;
+    """, (application_name, version))
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    path = row[0]
+    return storage.get(path) if os.getenv("STORAGE_BACKEND") == "local" else storage.get(path, presign=presign)
+
+
+@app.get("/download-app/{application_name}/{version}")
+def download_app(application_name: str, version: str):
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT l.path
+        FROM applications a
+        JOIN versions v ON a.id = v.application_id
+        JOIN locations l ON v.id = l.version_id
+        WHERE a.name = %s AND v.version = %s
+        ORDER BY l.id LIMIT 1;
+    """, (application_name, version))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="No files found for this version")
+
+    base_path = row[0]
+
+    print(f"{base_path=}")
+
+    if os.getenv("STORAGE_BACKEND") == "local":
+        # If the path is a folder, find the first file inside
+        if os.path.isdir(base_path):
+            print(f"is dir")
+            files = [f for f in os.listdir(base_path) if os.path.isfile(os.path.join(base_path, f))]
+            if not files:
+                raise HTTPException(status_code=404, detail="No files found in version folder")
+            file_path = os.path.join(base_path, files[0])
+        else:
+            file_path = base_path
+
+        # Use the actual file name for download
+        filename = os.path.basename(file_path)
+
+        print(f"{filename=}")
+        return FileResponse(file_path, filename=filename)
+
+    else:  # S3 backend
+        import boto3, tempfile
+        s3 = boto3.client("s3")
+        # Expect base_path like s3://bucket/key/prefix or full file path
+        if base_path.endswith("/"):  # folder
+            bucket, key_prefix = base_path.replace("s3://", "").split("/", 1)
+            resp = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix)
+            if "Contents" not in resp or not resp["Contents"]:
+                raise HTTPException(status_code=404, detail="No files in version folder")
+            # pick first actual file
+            keys = [obj["Key"] for obj in resp["Contents"] if not obj["Key"].endswith("/")]
+            if not keys:
+                raise HTTPException(status_code=404, detail="No files found in version folder")
+            key = keys[0]
+        else:  # single file
+            bucket, key = base_path.replace("s3://", "").split("/", 1)
+
+        # Generate presigned URL
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=3600
+        )
+        return {"url": url, "filename": os.path.basename(key)}
