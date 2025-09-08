@@ -5,11 +5,18 @@ import tempfile
 
 
 class StorageBackend:
+    STORAGE_TYPE: str
+
     def save(self, file, filename, app_name, version):
+        raise NotImplementedError
+
+    def get(self, path: str):
         raise NotImplementedError
 
 
 class LocalStorage(StorageBackend):
+    STORAGE_TYPE: str = "local"
+
     def __init__(self, base_path):
         self.base_path = base_path
         os.makedirs(self.base_path, exist_ok=True)
@@ -29,13 +36,15 @@ class LocalStorage(StorageBackend):
 
 
 class S3Storage(StorageBackend):
+    STORAGE_TYPE: str = "s3"
+
     def __init__(self, bucket, region, key, secret):
-        self.bucket = bucket
+        self.bucket = bucket or os.getenv("S3_BUCKET")
         self.s3 = boto3.client(
             "s3",
-            aws_access_key_id=key,
-            aws_secret_access_key=secret,
-            region_name=region,
+            aws_access_key_id=key or os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=secret or os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=region or os.getenv("AWS_REGION"),
         )
 
     def save(self, file, filename, app_name, version):
@@ -64,12 +73,14 @@ class S3Storage(StorageBackend):
 
 def get_storage():
     backend = os.getenv("STORAGE_BACKEND", "local").lower()
-    if backend == "s3":
+    if backend == S3Storage.STORAGE_TYPE:
         return S3Storage(
             bucket=os.getenv("S3_BUCKET"),
             region=os.getenv("AWS_REGION"),
             key=os.getenv("AWS_ACCESS_KEY_ID"),
             secret=os.getenv("AWS_SECRET_ACCESS_KEY"),
         )
-    else:
+    elif backend == LocalStorage.STORAGE_TYPE:
         return LocalStorage(os.getenv("LOCAL_STORAGE_PATH", "/app/uploads"))
+    else:
+        raise Exception(f"Invalid storage backend provided. {backend}")

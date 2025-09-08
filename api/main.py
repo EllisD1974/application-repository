@@ -1,75 +1,37 @@
 # main.py
 from email.mime import base
-import psycopg2
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
 from typing import List
 import boto3
 import os
 
+from models import LocationOut, VersionOut, ApplicationOut
+from db import PostgresConnection
 from storage import get_storage
 
 
 storage = get_storage()
-
-DB_CONFIG = {
-    "dbname": os.environ.get("DB_NAME"),
-    "user": os.environ.get("DB_USER"),
-    "password": os.environ.get("DB_PASSWORD"),
-    "host": os.environ.get("DB_HOST"),  # name of your postgres container in Docker Compose
-    "port": os.environ.get("DB_PORT")
-}
-
-s3 = boto3.client(
-    "s3",
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.getenv("AWS_REGION")
-)
-
-S3_BUCKET = os.getenv("S3_BUCKET") 
-
 app = FastAPI()
-
-# Pydantic models
-class LocationOut(BaseModel):
-    path: str
-
-class VersionOut(BaseModel):
-    version: str
-    locations: List[LocationOut]
-
-class ApplicationOut(BaseModel):
-    id: int
-    name: str
-    versions: List[VersionOut] = []
-
-# DB helper
-def get_conn():
-    return psycopg2.connect(**DB_CONFIG)
 
 # API endpoints
 @app.get("/applications", response_model=List[ApplicationOut])
 def get_applications():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT id, name FROM applications")
-    apps = cur.fetchall()
-    result = []
-    for app_id, name in apps:
-        cur.execute("""
-            SELECT id, version FROM versions WHERE application_id=%s
-        """, (app_id,))
-        versions_data = cur.fetchall()
-        versions_list = []
-        for version_id, version_name in versions_data:
-            cur.execute("SELECT path FROM locations WHERE version_id=%s", (version_id,))
-            locations = [LocationOut(path=p[0]) for p in cur.fetchall()]
-            versions_list.append(VersionOut(version=version_name, locations=locations))
-        result.append(ApplicationOut(id=app_id, name=name, versions=versions_list))
-    cur.close()
-    conn.close()
+    with PostgresConnection as cur:
+        cur.execute("SELECT id, name FROM applications")
+        apps = cur.fetchall()
+        result = []
+        for app_id, name in apps:
+            cur.execute("""
+                SELECT id, version FROM versions WHERE application_id=%s
+            """, (app_id,))
+            versions_data = cur.fetchall()
+            versions_list = []
+            for version_id, version_name in versions_data:
+                cur.execute("SELECT path FROM locations WHERE version_id=%s", (version_id,))
+                locations = [LocationOut(path=p[0]) for p in cur.fetchall()]
+                versions_list.append(VersionOut(version=version_name, locations=locations))
+            result.append(ApplicationOut(id=app_id, name=name, versions=versions_list))
     return result
 
 @app.post("/upload")
@@ -82,48 +44,38 @@ async def upload_file(
     saved_path = storage.save(file_bytes, file.filename, application_name, version)
 
     # Save metadata in DB
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
+    with PostgresConnection() as cur:
+        # Insert app
+        cur.execute("INSERT INTO applications (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id;", (application_name,))
+        app_row = cur.fetchone()
+        if app_row:
+            app_id = app_row[0]
+        else:
+            cur.execute("SELECT id FROM applications WHERE name=%s", (application_name,))
+            app_id = cur.fetchone()[0]
 
-    # Insert app
-    cur.execute("INSERT INTO applications (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id;", (application_name,))
-    app_row = cur.fetchone()
-    if app_row:
-        app_id = app_row[0]
-    else:
-        cur.execute("SELECT id FROM applications WHERE name=%s", (application_name,))
-        app_id = cur.fetchone()[0]
+        # Insert version
+        cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
+        version_id = cur.fetchone()[0]
 
-    # Insert version
-    cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
-    version_id = cur.fetchone()[0]
-
-    # Insert location
-    cur.execute("INSERT INTO locations (path, version_id) VALUES (%s, %s);", (saved_path, version_id))
-
-    conn.commit()
-    cur.close()
-    conn.close()
+        # Insert location
+        cur.execute("INSERT INTO locations (path, version_id) VALUES (%s, %s);", (saved_path, version_id))
 
     return {"message": "File uploaded", "path": saved_path}
 
 @app.get("/download-version-dir/{application_name}/{version}")
 def download_version_dir(application_name: str, version: str, presign: bool = Query(True)):
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
+    with PostgresConnection() as cur:
+        cur.execute("""
+            SELECT l.path
+            FROM applications a
+            JOIN versions v ON a.id = v.application_id
+            JOIN locations l ON v.id = l.version_id
+            WHERE a.name = %s AND v.version = %s
+            ORDER BY l.id LIMIT 1;
+        """, (application_name, version))
+        row = cur.fetchone()
 
-    cur.execute("""
-        SELECT l.path
-        FROM applications a
-        JOIN versions v ON a.id = v.application_id
-        JOIN locations l ON v.id = l.version_id
-        WHERE a.name = %s AND v.version = %s
-        ORDER BY l.id LIMIT 1;
-    """, (application_name, version))
-    row = cur.fetchone()
-
-    cur.close()
-    conn.close()
 
     if not row:
         raise HTTPException(status_code=404, detail="File not found")
@@ -131,35 +83,27 @@ def download_version_dir(application_name: str, version: str, presign: bool = Qu
     path = row[0]
     return storage.get(path) if os.getenv("STORAGE_BACKEND") == "local" else storage.get(path, presign=presign)
 
-
 @app.get("/download-app/{application_name}/{version}")
 def download_app(application_name: str, version: str):
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT l.path
-        FROM applications a
-        JOIN versions v ON a.id = v.application_id
-        JOIN locations l ON v.id = l.version_id
-        WHERE a.name = %s AND v.version = %s
-        ORDER BY l.id LIMIT 1;
-    """, (application_name, version))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+    with PostgresConnection() as cur:
+        cur.execute("""
+            SELECT l.path
+            FROM applications a
+            JOIN versions v ON a.id = v.application_id
+            JOIN locations l ON v.id = l.version_id
+            WHERE a.name = %s AND v.version = %s
+            ORDER BY l.id LIMIT 1;
+        """, (application_name, version))
+        row = cur.fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="No files found for this version")
 
     base_path = row[0]
 
-    print(f"{base_path=}")
-
-    if os.getenv("STORAGE_BACKEND") == "local":
+    if storage.STORAGE_TYPE == "local":
         # If the path is a folder, find the first file inside
         if os.path.isdir(base_path):
-            print(f"is dir")
             files = [f for f in os.listdir(base_path) if os.path.isfile(os.path.join(base_path, f))]
             if not files:
                 raise HTTPException(status_code=404, detail="No files found in version folder")
@@ -169,13 +113,10 @@ def download_app(application_name: str, version: str):
 
         # Use the actual file name for download
         filename = os.path.basename(file_path)
-
-        print(f"{filename=}")
         return FileResponse(file_path, filename=filename)
 
-    else:  # S3 backend
-        import boto3, tempfile
-        s3 = boto3.client("s3")
+    elif storage.STORAGE_TYPE == "s3":  # S3 backend
+        s3 = storage.s3
         # Expect base_path like s3://bucket/key/prefix or full file path
         if base_path.endswith("/"):  # folder
             bucket, key_prefix = base_path.replace("s3://", "").split("/", 1)
@@ -197,3 +138,5 @@ def download_app(application_name: str, version: str):
             ExpiresIn=3600
         )
         return {"url": url, "filename": os.path.basename(key)}
+    else:
+        raise Exception(f"Invalid storage backend {storage.STORAGE_TYPE}")
