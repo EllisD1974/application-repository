@@ -70,6 +70,7 @@ curl http://localhost:8000/get-app/MyApp/1.0.0
 curl -O http://localhost:8000/download-app/MyApp/1.0.0
 ```
 
+
 ## 🧩 Roadmap
 - [ ] Add authentication & authorization
 - [ ] Provide a web UI for browsing apps
@@ -78,7 +79,7 @@ curl -O http://localhost:8000/download-app/MyApp/1.0.0
 - [ ] Add automated CI/CD deployment
 
 
-👤 Maintainer
+## 👤 Maintainer
 
 EllisD1974
 
