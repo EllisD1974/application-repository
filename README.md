@@ -72,15 +72,16 @@ curl -O http://localhost:8000/download-app/MyApp/1.0.0
 
 
 ## 🧩 Roadmap
+- [ ] Support S3 or local storage
+- [ ] Add option for back up checks to allow searching storage if not found in database
 - [ ] Add authentication & authorization
-- [ ] Provide a web UI for browsing apps
+- [ ] Provide a python module for API interaction
 - [ ] Implement database persistence for metadata
 - [ ] Enable S3 / cloud storage backends
 - [ ] Add automated CI/CD deployment
 
 
 ## 👤 Maintainer
-
 EllisD1974
 
-GitHub: @EllisD1974
+**GitHub:** @EllisD1974
