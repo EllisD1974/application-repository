@@ -48,21 +48,22 @@ The API will now be available at:
 
 
 ## 📖 Usage
-### Register an application
+
+### List all applications
+```bash
+curl http://localhost:8000/applications
+```
+
+### Upload an application/new version
 
 ```bash
-curl -X POST http://localhost:8000/register-app \
+curl -X POST http://localhost:8000/upload \
   -H "Content-Type: application/json" \
   -d '{
     "name": "MyApp",
     "version": "1.0.0",
     "url": "http://example.com/MyApp/1.0.0/myapp.exe"
   }'
-```
-
-### Get application details
-```bash
-curl http://localhost:8000/get-app/MyApp/1.0.0
 ```
 
 ### Download an application
