@@ -58,17 +58,17 @@ curl http://localhost:8000/applications
 
 ```bash
 curl -X POST http://localhost:8000/upload \
-  -H "Content-Type: application/json" \
-  -d '{
+-H "Content-Type: application/json" \
+-d '{
     "name": "MyApp",
     "version": "1.0.0",
     "url": "http://example.com/MyApp/1.0.0/myapp.exe"
-  }'
+}'
 ```
 
 ### Download an application
 ```bash
-curl -O http://localhost:8000/download-app/MyApp/1.0.0
+curl -J http://localhost:8000/download-app/MyApp/1.0.0
 ```
 
 
