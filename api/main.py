@@ -2,7 +2,7 @@
 from email.mime import base
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, StreamingResponse
-from typing import List
+from typing import List, Optional
 import boto3
 import os
 
@@ -34,13 +34,14 @@ def get_applications():
             result.append(ApplicationOut(id=app_id, name=name, versions=versions_list))
     return result
 
+
 @app.post("/upload")
 async def upload_file(
     application_name: str = Form(...),
     version: str = Form(...),
     file: UploadFile = File(...),
     clobber: bool = Form(False),
-    auto_increment: bool = Form(False)
+    auto_increment_index: Optional[int] = Form(None)  # index of version part to bump, or None
 ):
     file_bytes = await file.read()
 
@@ -70,13 +71,13 @@ async def upload_file(
                 cur.execute("DELETE FROM locations WHERE version_id=%s;", (version_id,))
                 # (Optional: also delete the physical file if desired)
 
-            elif auto_increment:
-                # Find the highest existing version for this app
+            elif auto_increment_index is not None:
+                # Find all existing versions for this app
                 cur.execute("SELECT version FROM versions WHERE application_id=%s;", (app_id,))
                 versions = [row[0] for row in cur.fetchall()]
 
-                # Auto-increment: assumes versions are numeric like 1.0.0
-                def parse_version(v):
+                # Parse helper
+                def parse_version(v: str):
                     return [int(x) for x in v.split(".")]
 
                 def format_version(parts):
@@ -85,14 +86,30 @@ async def upload_file(
                 try:
                     parsed = parse_version(version)
                 except ValueError:
-                    raise HTTPException(status_code=400, detail="Auto-increment requires numeric versions like X.Y.Z")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Auto-increment requires numeric versions like X.Y.Z"
+                    )
+
+                if auto_increment_index >= len(parsed):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid auto_increment index {auto_increment_index} for version '{version}'"
+                    )
 
                 while version in versions:
-                    parsed[-1] += 1  # bump patch number
+                    parsed[auto_increment_index] += 1
+                    # Reset all parts to the right to zero (conventional semver bumping)
+                    if auto_increment_index != -1:
+                        for i in range(auto_increment_index + 1, len(parsed)):
+                            parsed[i] = 0
                     version = format_version(parsed)
 
                 # Insert new version row
-                cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
+                cur.execute(
+                    "INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;",
+                    (version, app_id)
+                )
                 version_id = cur.fetchone()[0]
 
             else:
@@ -102,14 +119,20 @@ async def upload_file(
                 )
         else:
             # Insert new version normally
-            cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
+            cur.execute(
+                "INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;",
+                (version, app_id)
+            )
             version_id = cur.fetchone()[0]
 
         # Save file
         saved_path = storage.save(file_bytes, file.filename, application_name, version)
 
         # Insert location record
-        cur.execute("INSERT INTO locations (path, version_id) VALUES (%s, %s);", (saved_path, version_id))
+        cur.execute(
+            "INSERT INTO locations (path, version_id) VALUES (%s, %s);",
+            (saved_path, version_id)
+        )
 
     return {"message": "File uploaded", "path": saved_path, "version": version}
 

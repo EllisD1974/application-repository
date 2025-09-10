@@ -1,6 +1,6 @@
 import requests
 from pathlib import Path
-from typing import Union
+from typing import Union, Optional
 
 
 class AppRepoClient:
@@ -22,31 +22,54 @@ class AppRepoClient:
         return response.json()
 
 
-    def upload_application(self, application_name: str, version: str, file_path: str, 
-        clobber: bool = False, auto_increment: bool = False):
+    def upload_application(
+        self,
+        application_name: str,
+        version: str,
+        file_path: str,
+        clobber: bool = False,
+        auto_increment_index: Optional[int] = None
+    ):
         """
-        Upload a new application or a new version of an existing application.
+        Uploads an application to the API.
 
         Args:
             application_name (str): Name of the application
-            version (str): Version string (e.g., "1.0.0")
+            version (str): Version string (e.g., '1.0.0')
             file_path (str): Path to the file being uploaded
-
-        Returns:
-            dict: JSON response from the API
+            clobber (bool): Replace existing version if it exists
+            auto_increment_index (Optional[int]): Version index to auto-increment (0=major, 1=minor, 2=patch).
+                                                None means no auto-increment
         """
-        api_url = f"{self.base_url}/upload"
-        with open(file_path, "rb") as f:
-            files = {"file": (file_path, f)}
-            data = {
-                "application_name": application_name,
-                "version": version,
-                "clobber": clobber,
-                "auto_increment": auto_increment,
-            }
-            response = requests.post(api_url, data=data, files=files)
+        file_path = Path(file_path)
+        if not file_path.is_file():
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-        response.raise_for_status()  # raises error if request failed
+        files = {"file": (file_path.name, open(file_path, "rb"))}
+        data = {
+            "application_name": application_name,
+            "version": version,
+            "clobber": str(clobber).lower(),  # FastAPI expects 'true'/'false' as form values
+        }
+
+        # Only include auto_increment if it is not None
+        if auto_increment_index is not None:
+            data["auto_increment_index"] = str(auto_increment_index)
+
+        response = requests.post(f"{self.base_url}/upload", data=data, files=files)
+
+        # Close the opened file
+        files["file"][1].close()
+
+        try:
+            response.raise_for_status()
+        except requests.HTTPError:
+            # Return API error message
+            try:
+                return response.json()
+            except Exception:
+                raise
+
         return response.json()
 
 
