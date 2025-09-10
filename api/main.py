@@ -17,7 +17,7 @@ app = FastAPI()
 # API endpoints
 @app.get("/applications", response_model=List[ApplicationOut])
 def get_applications():
-    with PostgresConnection as cur:
+    with PostgresConnection() as cur:
         cur.execute("SELECT id, name FROM applications")
         apps = cur.fetchall()
         result = []
@@ -38,30 +38,80 @@ def get_applications():
 async def upload_file(
     application_name: str = Form(...),
     version: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    clobber: bool = Form(False),
+    auto_increment: bool = Form(False)
 ):
     file_bytes = await file.read()
-    saved_path = storage.save(file_bytes, file.filename, application_name, version)
 
-    # Save metadata in DB
     with PostgresConnection() as cur:
-        # Insert app
-        cur.execute("INSERT INTO applications (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id;", (application_name,))
+        # Insert app (or fetch existing)
+        cur.execute("""
+            INSERT INTO applications (name) VALUES (%s)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id;
+        """, (application_name,))
         app_row = cur.fetchone()
         if app_row:
             app_id = app_row[0]
         else:
-            cur.execute("SELECT id FROM applications WHERE name=%s", (application_name,))
+            cur.execute("SELECT id FROM applications WHERE name=%s;", (application_name,))
             app_id = cur.fetchone()[0]
 
-        # Insert version
-        cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
-        version_id = cur.fetchone()[0]
+        # Check if version already exists
+        cur.execute("SELECT id FROM versions WHERE version=%s AND application_id=%s;", (version, app_id))
+        existing_version = cur.fetchone()
 
-        # Insert location
+        if existing_version:
+            if clobber:
+                version_id = existing_version[0]
+
+                # Remove old file entry
+                cur.execute("DELETE FROM locations WHERE version_id=%s;", (version_id,))
+                # (Optional: also delete the physical file if desired)
+
+            elif auto_increment:
+                # Find the highest existing version for this app
+                cur.execute("SELECT version FROM versions WHERE application_id=%s;", (app_id,))
+                versions = [row[0] for row in cur.fetchall()]
+
+                # Auto-increment: assumes versions are numeric like 1.0.0
+                def parse_version(v):
+                    return [int(x) for x in v.split(".")]
+
+                def format_version(parts):
+                    return ".".join(str(x) for x in parts)
+
+                try:
+                    parsed = parse_version(version)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Auto-increment requires numeric versions like X.Y.Z")
+
+                while version in versions:
+                    parsed[-1] += 1  # bump patch number
+                    version = format_version(parsed)
+
+                # Insert new version row
+                cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
+                version_id = cur.fetchone()[0]
+
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Application '{application_name}' with version '{version}' already exists"
+                )
+        else:
+            # Insert new version normally
+            cur.execute("INSERT INTO versions (version, application_id) VALUES (%s, %s) RETURNING id;", (version, app_id))
+            version_id = cur.fetchone()[0]
+
+        # Save file
+        saved_path = storage.save(file_bytes, file.filename, application_name, version)
+
+        # Insert location record
         cur.execute("INSERT INTO locations (path, version_id) VALUES (%s, %s);", (saved_path, version_id))
 
-    return {"message": "File uploaded", "path": saved_path}
+    return {"message": "File uploaded", "path": saved_path, "version": version}
 
 @app.get("/download-version-dir/{application_name}/{version}")
 def download_version_dir(application_name: str, version: str, presign: bool = Query(True)):
