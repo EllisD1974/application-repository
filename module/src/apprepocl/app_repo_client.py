@@ -17,8 +17,10 @@ class AppRepoClient:
         Get a list of all applications and their versions.
         """
         url = f"{self.base_url}/applications"
+
         response = requests.get(url)
         response.raise_for_status()
+        
         return response.json()
 
 
