@@ -8,8 +8,8 @@ class AppRepoClient:
     A client for interacting with the Application Repository API.
     """
 
-    def __init__(self, base_url="http://localhost:8000"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url=None):
+        self.base_url = base_url.rstrip("/") if base_url else "http://localhost:8000"
 
 
     def list_applications(self):
