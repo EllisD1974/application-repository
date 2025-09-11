@@ -1,0 +1,39 @@
+name: Build Python module
+
+on:
+  push:
+    paths:
+      - 'module/**'        # only run when files under module/ change
+  pull_request:
+    paths:
+      - 'module/**'
+  workflow_dispatch:      # allows manual runs from the Actions UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install build backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build wheel and sdist
+        working-directory: ./module
+        run: |
+          python -m build --sdist --wheel
+
+      - name: Upload built artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-dist
+          path: module/dist/*
