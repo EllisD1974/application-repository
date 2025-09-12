@@ -1,0 +1,74 @@
+name: Build Python module
+
+on:
+  push:
+    paths:
+      - 'module/**'
+  pull_request:
+    paths:
+      - 'module/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write      # needed if you create releases / upload release assets
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [
+          "3.8",
+          "3.9",
+          "3.10",
+          "3.11",
+          "3.12"
+        ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('module/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build package
+        working-directory: ./module
+        run: python -m build --sdist --wheel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apprepocl-${{ matrix.python-version }}
+          path: module/dist/*
+
+# publish:
+#     needs: build
+#     runs-on: ubuntu-latest
+#     if: github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish]')
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Install twine
+#         run: python -m pip install --upgrade pip twine
+
+#       - name: Publish to PyPI
+#         working-directory: ./module
+#         env:
+#           TWINE_USERNAME: __token__
+#           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+#         run: |
+#           python -m twine upload dist/*
