@@ -1,6 +1,7 @@
 import requests
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, List
+from .change_log import Log
 
 
 class AppRepoClient:
@@ -10,7 +11,6 @@ class AppRepoClient:
 
     def __init__(self, base_url=None):
         self.base_url = base_url.rstrip("/") if base_url else "http://localhost:8000"
-
 
     def list_applications(self):
         """
@@ -22,7 +22,6 @@ class AppRepoClient:
         response.raise_for_status()
         
         return response.json()
-
 
     def upload_application(
         self,
@@ -74,7 +73,6 @@ class AppRepoClient:
 
         return response.json()
 
-
     def download_application(self, name: str, version: str, save_path: Union[str, Path]):
         """
         Download an application by name and version.
@@ -106,3 +104,49 @@ class AppRepoClient:
                 f.write(chunk)
 
         return save_path
+
+    def add_log(self, app_name: str, log: Log) -> Log:
+        """
+        Add a log for a given app and version.
+        """
+        api_url = f"{self.base_url}/apps/{app_name}/logs"
+        response = requests.post(api_url, json={
+            "version": log.version,
+            "ticket": log.ticket,
+            "description": log.description,
+            "visible": log.visible
+        })
+
+        response.raise_for_status()
+        data = response.json()
+
+        return Log(
+            version=data["version"],
+            description=data["description"],
+            ticket=data.get("ticket"),
+            visible=data.get("visible", True)
+        )
+
+    def get_logs(self, app_name: str, version: Optional[str] = None) -> List[Log]:
+        """
+        Get logs for an app. If version is specified, only logs for that version.
+        """
+        if version:
+            api_url = f"{self.base_url}/apps/{app_name}/versions/{version}/logs"
+        else:
+            api_url = f"{self.base_url}/apps/{app_name}/logs"
+
+        response = requests.get(api_url)
+
+        response.raise_for_status()
+        data = response.json()
+
+        return [
+            Log(
+                version=item["version"],
+                description=item["description"],
+                ticket=item.get("ticket"),
+                visible=item.get("visible", True)
+            )
+            for item in data
+        ]

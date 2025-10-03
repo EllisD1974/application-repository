@@ -5,3 +5,4 @@
 
 
 from .app_repo_client import AppRepoClient
+from .change_log import Log, Changelog

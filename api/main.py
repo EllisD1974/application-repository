@@ -6,13 +6,30 @@ from typing import List, Optional
 import boto3
 import os
 
-from models import LocationOut, VersionOut, ApplicationOut
+from models import (
+    LocationOut,
+    VersionOut,
+    ApplicationOut,
+    LogCreate,
+    LogRead,
+)
 from db import PostgresConnection
 from storage import get_storage
 
 
 storage = get_storage()
 app = FastAPI()
+
+# TODO(EllisD1974):
+#   - Add remove logs
+#   - Add remove application version(s)
+#       - This should allow for removing more than 1 version in a single call
+#   - Improve storage handling
+#       - Add option for allowing the storage system to actually be checked for applications uploaded without the use
+#           of this API
+#           - Because the storage method uses aptly named directories, some of the db information can be determined
+#               just by using the related path. This would be useful especially for any transition from an older method.
+#           - This would also be very useful for an initial "bulk" upload of applications previously saved elsewhere.
 
 # API endpoints
 @app.get("/applications", response_model=List[ApplicationOut])
@@ -213,3 +230,76 @@ def download_app(application_name: str, version: str):
         return {"url": url, "filename": os.path.basename(key)}
     else:
         raise Exception(f"Invalid storage backend {storage.STORAGE_TYPE}")
+
+@app.post("/apps/{app_name}/logs", response_model=LogRead)
+def create_log(app_name: str, log: LogCreate):
+    with PostgresConnection() as cur:
+        # Insert directly with subselect for version_id
+        cur.execute(
+            """
+            INSERT INTO change_logs (ticket, description, visible, version_id)
+            VALUES (%s, %s, %s,
+                (SELECT v.id
+                 FROM versions v
+                 JOIN applications a ON v.application_id = a.id
+                 WHERE a.name = %s AND v.version = %s)
+            )
+            RETURNING id, ticket, description, visible, version_id
+            """,
+            (log.ticket, log.description, log.visible, app_name, log.version),
+        )
+        row = cur.fetchone()
+
+        if not row or row[4] is None:
+            raise HTTPException(status_code=404, detail=f"Version '{log.version}' for app '{app_name}' not found")
+
+    return {
+        "id": row[0],
+        "ticket": row[1],
+        "description": row[2],
+        "visible": row[3],
+        "version_id": row[4],
+        "version": log.version,
+    }
+
+
+@app.get("/apps/{app_name}/logs", response_model=List[LogRead])
+@app.get("/apps/{app_name}/versions/{version}/logs", response_model=List[LogRead])
+def get_logs(app_name: str, version: Optional[str] = None):
+    with PostgresConnection() as cur:
+        if version:
+            cur.execute(
+                """
+                SELECT c.id, c.ticket, c.description, c.visible, c.version_id
+                FROM change_logs c
+                JOIN versions v ON c.version_id = v.id
+                JOIN applications a ON v.application_id = a.id
+                WHERE a.name = %s AND v.version = %s
+                """,
+                (app_name, version),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT c.id, c.ticket, c.description, c.visible, c.version_id, v.version
+                FROM change_logs c
+                JOIN versions v ON c.version_id = v.id
+                JOIN applications a ON v.application_id = a.id
+                WHERE a.name = %s
+                """,
+                (app_name,),
+            )
+        rows = cur.fetchall()
+
+    return [
+        {
+            "id": r[0],
+            "ticket": r[1],
+            "description": r[2],
+            "visible": r[3],
+            "version_id": r[4],
+            "version": r[5]
+        }
+        # dict(id=r[0], ticket=r[1], description=r[2], visible=r[3], version_id=r[4])
+        for r in rows
+    ]

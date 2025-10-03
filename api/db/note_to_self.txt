@@ -1,0 +1,6 @@
+# Note to self
+
+In order to apply new schema changes, these commands can be ran:
+```sudo docker-compose down -v
+   sudo docker-compose up --build
+```

@@ -18,3 +18,12 @@ CREATE TABLE locations (
     path TEXT NOT NULL, -- can be s3://bucket/path or /local/path
     version_id INTEGER REFERENCES versions(id) ON DELETE CASCADE
 );
+
+-- change_logs table
+CREATE TABLE change_logs (
+    id SERIAL PRIMARY KEY,
+    ticket TEXT,
+    description TEXT NOT NULL,
+    visible BOOLEAN DEFAULT TRUE,
+    version_id INTEGER REFERENCES versions(id) ON DELETE CASCADE
+);
